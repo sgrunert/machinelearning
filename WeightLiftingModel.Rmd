@@ -1,0 +1,164 @@
+
+Weight Lifting Performance Recognition Model
+========================================================
+Author:  Steve Grunert     
+Created: 21 May 2015  
+
+## Executive Summary
+
+The model development below used sensor data from the Weight Lifting Exercises Dataset at http://groupware.les.inf.puc-rio.br/har. For more information about the data, see the paper "Qualitative Activity Recognition of Weight Lifting Exercises" at the same URL. The purpose of the original study was to create a prediction model for classifying weight lifting curls by the quality of the technique. The sensor data in the study was recorded and visually classified by an observer as being for techniques A-E, with A being the correct technique, and B-E being for various incorrect techniques. 
+
+The purpose of the model development described here was similar to the original study with the following questions to be answered: 
+
+- Can weight lifting technique be classified based on sensor data alone, using the data supplied in the original study?
+- Can significant accuracy (>= 95%) be achieved against an out-of-sample dataset? 
+
+From the findings, it was possible to create a predictive model with 99.1% accuracy (0.9908233) and 0.9% out-of-sample estimated error (1 - accuracy). The model used 52 selected sensor variables, a random forest method, and 2x k-fold cross-validation.  
+  
+## Data Preprocessing
+
+NOTE: The source dataset was referred to as the pml-training file. This distinguished it from a pml-test file of 20 rows held for later use as a challenge set. To avoid confusion, the source pml-training file was subdivided into a training dataset (60%) and an out-of-sample, validation dataset (40%). Use of the word "test" was avoided.
+
+Based on the findings of preliminary data exploration, the source pml-training file was processed as follows: 
+
+1. The data was obtained as a CSV file from the source URL.
+2. The dataset was reduced to remove columns that were predominantly NAs.
+3. The dataset was reduced to remove unnecessary sequencing columns.
+4. The target outcome column (classe) was converted to a factor data type.
+5. The dataset was randomly split into a training dataset (60%) and a validation dataset (40%).
+
+
+```{r A, echo=TRUE, results="hide", message=FALSE}
+#Preparation for subsequent formulas.
+library(caret)
+library(randomForest)
+
+#Obtain source data and make all empty fields = NA.
+url <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+rawData <- read.csv(url(url),na.strings=c("NA","","#DIV/0!")
+                    ,header=TRUE,stringsAsFactors = FALSE)
+
+#Remove NA columns.
+reducedNames <- names(rawData[,(colMeans(is.na(rawData)) < 0.6)])
+reducedData <- rawData[,reducedNames]
+
+#Remove sequencing columns.
+sequencingCols <- c("X","user_name","raw_timestamp_part_1","raw_timestamp_part_2"
+                    ,"cvtd_timestamp","new_window","num_window")
+discreteData <- reducedData[,!(names(reducedData) %in% sequencingCols)]
+
+#Split processed data into train and validation datasets.
+set.seed(2015)
+inTrain = createDataPartition(y = discreteData$classe, p = 0.6, list=FALSE)
+trainData = discreteData[ inTrain,]
+xvalData = discreteData[-inTrain,]
+
+#Make outcome column a factor data type.
+trainData$classe <- as.factor(trainData$classe)
+
+```
+
+## Data Exploration
+The training data had 11776 rows and 53 columns, and the validation data had 7846 rows and 53 columns, making a 60/40 split. The predictor sensor columns chosen were as listed below.
+
+```{r B, echo=TRUE}
+#Training data row and column counts.
+dim(trainData)
+```
+
+```{r C, echo=TRUE}
+#Validation data row and column counts.
+dim(xvalData)
+```
+
+```{r D, echo=TRUE}
+#Chosen predictors with actual outcome as last column (classe).
+names(trainData)
+```
+
+## Model Development
+
+During preliminary screening, a 10% probe dataset was split off from the training set and used to evaluate methods for accuracy: including CART (rpart), naive bayes (nb), stochastic gradient boosting (gbm), linear discriminant analysis (lda), and random forest (rf) methods. This screening gave very accurate results using the random forest method alone, eliminating the need to stack multiple models. Development then focused on scaling a random forest model to run at a reasonable rate for the full training dataset. Multiple k-fold cross-validation settings were compared for accuracy and then optimized for speed by running in parallel across multiple computer cores.  It was found the best number of parallel threads was half the number of CPU cores and that the number of k-folds should match the number of threads. In this case, the number of processing threads and k-folds was 2. The final optimized model was as follows.
+
+See the Appendix for the complete model specification.
+
+
+```{r E, eval=FALSE}
+#############################################################
+##########WARNING: This runs for a very long time.###########
+#############################################################
+
+#Register a parallel cluster.
+cl <- makeCluster(2)
+registerDoParallel(cl)
+
+#Create a random forest model fit with 2x k-fold cross-validation.
+modFitRF <- train(classe~., method="rf"
+                  , trControl=trainControl(method="cv",number=2) # 2x k-fold
+                  , allowParallel=TRUE # Distribute across cores in parallel.
+                  , prox=TRUE
+                  , data=trainData)
+
+#Store the model fit for later use.
+saveRDS(modFitRF,"modFitRF.RDS")
+
+```
+
+## Prediction Model Validation
+
+The model fit from above was used to predict outcomes from the validation dataset. This prediction was then run as a confusion matrix to determine accuracy. A matrix of predictions versus actuals is given below.
+
+See the Appendix for the complete confusion matrix specification.
+
+```{r F , echo=TRUE}
+#Read in stored model.
+modFitRF <- readRDS("modFitRF.RDS")
+
+#Create validation prediction and show accuracy.
+predRF<-predict(modFitRF,newdata = xvalData)
+confusionMatrix(predRF,xvalData$classe)$overall[1]
+
+```
+
+```{r G , echo=TRUE}
+#Show matrix of prediction (vertical) versus actual (horizontal) counts.
+table(predRF,xvalData$classe)
+
+```
+
+
+## Conclusions
+Although a high level of accuracy (99.1%) was achieved, and a low out-of-sample estimated error (1 - accuracy = 0.9%), the main challenge with this model was performance: the model was slow. It did not scale well. The random forest model took considerable effort converting it to optimized parallel processing. Also, with an overwhelming 500 trees (see the Appendix) the model must be accepted as accurate based on output, rather than by direct inspection. It is not possible for a human to directly understand the complex tree matrix of the model.
+
+
+Appendix
+========================================================
+## Model Specification.
+
+Full model.
+
+```{r H, echo=FALSE}
+#Full model.
+print(modFitRF)
+
+```
+
+Final model.
+
+```{r I, echo=FALSE}
+#Final model.
+print(modFitRF$finalModel)
+
+```
+
+## Confusion Matrix: Validation Data Predicted vs. Actual.
+
+```{r J, echo=FALSE}
+#Full confusion matrix.
+confusionMatrix(predRF,xvalData$classe)
+
+```
+
+
+
+
